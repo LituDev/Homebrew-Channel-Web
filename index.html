@@ -1,0 +1,1641 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>HBC</title>
+    <style>
+        body {
+            margin: 0;
+            background: #222;
+            color: #ccc;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .container {
+            position: relative;
+            width: 810px;
+            height: 456px;
+            margin-top: 20px;
+            background: #000;
+            box-shadow: 0 0 16px #0008;
+            overflow: hidden;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 20px;
+            color: #fff;
+        }
+
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        button {
+            margin: 5px;
+            padding: 8px 16px;
+            border: none;
+            background: #08f;
+            color: #fff;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        button:hover {
+            background: #06c;
+        }
+
+        .display-info {
+            margin-top: 10px;
+            padding: 5px 10px;
+            background: #333;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            width: 90%;
+            max-width: 800px;
+        }
+
+        .info-item {
+            display: flex;
+            align-items: center;
+        }
+
+        .fps-meter {
+            color: #0f0;
+            font-family: monospace;
+        }
+
+        .frame-counter {
+            color: #ff0;
+            font-family: monospace;
+        }
+
+        .missing-assets {
+            color: #f44;
+            margin-top: 10px;
+            font-family: monospace;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h2>HBC WII WEGBL</h2>
+    <div class="container">
+        <canvas id="canvas" width="810" height="456"></canvas>
+        <div class="loading" id="loadingText">Loading assets...</div>
+    </div>
+
+    <div class="controls">
+        <button id="playBtn">Play</button>
+        <button id="pauseBtn">Pause</button>
+        <button id="resetBtn">Reset</button>
+        <button id="jumpToBubbleBtn">Jump to Bubbles</button>
+    </div>
+
+    <div class="display-info">
+        <div class="info-item">Frame: <span id="frameCounter" class="frame-counter">0</span></div>
+        <div class="info-item">FPS: <span id="fpsMeter" class="fps-meter">60</span></div>
+    </div>
+
+    <div id="missingAssets" class="missing-assets"></div>
+
+    <script type="x-shader/x-vertex" id="vertex-shader">
+        attribute vec2 a_position;
+        attribute vec2 a_texCoord;
+        
+        uniform vec2 u_resolution;
+        uniform vec2 u_translation;
+        uniform vec2 u_scale;
+        uniform float u_rotation;
+        uniform vec2 u_texOffset;
+        uniform vec2 u_texScale;
+        
+        varying vec2 v_texCoord;
+        
+        // Matrix transformation functions
+        mat4 translation(vec2 translation) {
+            return mat4(
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                translation.x, translation.y, 0.0, 1.0
+            );
+        }
+        
+        mat4 rotation(float angle) {
+            float s = sin(angle * 3.14159 / 180.0);
+            float c = cos(angle * 3.14159 / 180.0);
+            return mat4(
+                c, s, 0.0, 0.0,
+                -s, c, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0
+            );
+        }
+        
+        mat4 scaling(vec2 scale) {
+            return mat4(
+                scale.x, 0.0, 0.0, 0.0,
+                0.0, scale.y, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0
+            );
+        }
+        
+        void main() {
+            // Create the transformation matrix
+            // First translate to center
+            mat4 modelView = translation(u_translation);
+            
+            // Then rotate
+            if (u_rotation != 0.0) {
+                modelView = modelView * rotation(u_rotation);
+            }
+            
+            // Then scale
+            modelView = modelView * scaling(u_scale);
+            
+            // Apply to position
+            vec4 worldPos = modelView * vec4(a_position, 0.0, 1.0);
+            
+            // Convert to clip space centered at origin (-1 to 1)
+            vec2 clipSpace = worldPos.xy / (u_resolution * 0.5);
+            
+            gl_Position = vec4(clipSpace, 0.0, 1.0);
+            
+            // Handle texture coordinates with texture matrix similar to OpenGL version
+            vec2 texCoord = a_texCoord;
+            
+            // Apply texture coordinate transformation
+            // Similar to the Python code's texture matrix
+            texCoord = texCoord - vec2(0.5, 0.5);
+            texCoord = texCoord * u_texScale;
+            texCoord = texCoord + u_texOffset;
+            texCoord = texCoord + vec2(0.5, 0.5);
+            
+            v_texCoord = texCoord;
+        }
+    </script>
+
+    <script type="x-shader/x-fragment" id="fragment-shader">
+        precision mediump float;
+        
+        uniform sampler2D u_image;
+        uniform vec4 u_color;
+        uniform float u_alpha;
+        
+        varying vec2 v_texCoord;
+        
+        void main() {
+            vec4 texColor = texture2D(u_image, v_texCoord);
+            
+            // Apply material color and alpha
+            gl_FragColor = texColor * u_color;
+            gl_FragColor.a *= u_alpha;
+        }
+    </script>
+
+    <script>
+        // --- Constants matching Wii animation timeline ---
+        const WIDTH = 810, HEIGHT = 456;
+        // const FAKE_START = -60 * 10;  // matches -10sec at 60fps initial fade
+        const FAKE_START = 0;  // matches -10sec at 60fps initial fade
+        const LOOP_START = 60 * 6;    // frame 360 (6s)
+        const LOOP_END = 60 * 22;     // 1320 (22s)
+        const BUBBLE_BOOM = 190;      // Bubble burst frame
+
+        // --- WebGL Constants mapping to original texture wrap modes ---
+        const WRAP_CLAMP_TO_EDGE = 0x0;
+        const WRAP_REPEAT = 0x1;
+        const WRAP_MIRRORED_REPEAT = 0x2;
+
+        // --- BrLan Constants matching the original Python code ---
+        const A_COORD = "RLPA";
+        const A_PARM = "RLVC";
+        const C_X = 0;
+        const C_Y = 1;
+        const C_ANGLE = 5;
+        const C_MAGX = 6;
+        const C_MAGY = 7;
+        const C_WIDTH = 8;
+        const C_HEIGHT = 9;
+        const P_ALPHA = 0x10;
+
+        // -- Global state --
+        let debugMode = false;
+        let frameCounter = document.getElementById('frameCounter');
+        let fpsMeter = document.getElementById('fpsMeter');
+        let missingAssetsDiv = document.getElementById('missingAssets');
+        let lastTime = 0;
+        let frameTimeAccum = 0;
+        let frameCount = 0;
+        let fpsValue = 60;
+        let materialsMap = {};
+        
+        // -- Enhanced Audio System --
+        let audioContext = null;
+        let introBuffer = null;
+        let loopBuffer = null;
+        let currentAudioSource = null;
+        let audioInitialized = false;
+        let audioScheduled = false;
+        let loopStartScheduled = false;
+        let introAudio = null;
+        let loopAudio = null;
+
+        // -- Canvas and WebGL setup --
+        const canvas = document.getElementById('canvas');
+        // Try to get WebGL 2.0 first, fall back to WebGL 1.0
+        let gl = canvas.getContext('webgl2');
+        if (!gl) {
+            gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+        }
+        
+        if (!gl) {
+            alert('Your browser does not support WebGL');
+            missingAssetsDiv.style.display = 'block';
+            missingAssetsDiv.textContent = 'WebGL not supported in your browser';
+        }
+        
+        // WebGL program and shader info
+        let program;
+        let programInfo = {
+            attribLocations: {},
+            uniformLocations: {}
+        };
+        
+        // Setup shaders and program
+        function initShaders() {
+            const vertexShaderSource = document.getElementById('vertex-shader').text;
+            const fragmentShaderSource = document.getElementById('fragment-shader').text;
+            
+            const vertexShader = compileShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+            const fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
+            
+            program = createProgram(gl, vertexShader, fragmentShader);
+            gl.useProgram(program);
+            
+            // Get attribute locations
+            programInfo.attribLocations.position = gl.getAttribLocation(program, 'a_position');
+            programInfo.attribLocations.texCoord = gl.getAttribLocation(program, 'a_texCoord');
+            
+            // Get uniform locations
+            programInfo.uniformLocations.resolution = gl.getUniformLocation(program, 'u_resolution');
+            programInfo.uniformLocations.translation = gl.getUniformLocation(program, 'u_translation');
+            programInfo.uniformLocations.scale = gl.getUniformLocation(program, 'u_scale');
+            programInfo.uniformLocations.rotation = gl.getUniformLocation(program, 'u_rotation');
+            programInfo.uniformLocations.image = gl.getUniformLocation(program, 'u_image');
+            programInfo.uniformLocations.color = gl.getUniformLocation(program, 'u_color');
+            programInfo.uniformLocations.alpha = gl.getUniformLocation(program, 'u_alpha');
+            programInfo.uniformLocations.texOffset = gl.getUniformLocation(program, 'u_texOffset');
+            programInfo.uniformLocations.texScale = gl.getUniformLocation(program, 'u_texScale');
+            
+            // Create buffers
+            createBuffers();
+        }
+        
+        function compileShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            
+            return shader;
+        }
+        
+        function createProgram(gl, vertexShader, fragmentShader) {
+            const program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+            
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error('Program link error:', gl.getProgramInfoLog(program));
+                return null;
+            }
+            
+            return program;
+        }
+        
+        // Create buffers for geometry
+        let positionBuffer, texCoordBuffer;
+        
+        function createBuffers() {
+            // Create position buffer (for rectangle vertices)
+            positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            
+            // Positions for a rectangle centered at origin (to match the original code)
+            // Python OpenGL uses quad vertices in this order: BL, BR, TL, TR
+            // Note: We use -0.5 to 0.5 to match the Python code's coordinate system
+            const positions = [
+                -0.5,  0.5,  // Bottom left
+                0.5,  0.5,  // Bottom right
+                -0.5, -0.5,  // Top left
+                0.5, -0.5,  // Top right
+            ];
+
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+            
+            // Create texture coordinate buffer
+            texCoordBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+            
+            // Default texture coordinates - match the Python code's pattern
+            // Python uses these coords: (0,0), (1,0), (0,1), (1,1)
+            const texCoords = [
+                0.0, 0.0,  // Bottom left
+                1.0, 0.0,  // Bottom right
+                0.0, 1.0,  // Top left
+                1.0, 1.0,  // Top right
+            ];
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texCoords), gl.STATIC_DRAW);
+        }
+        
+        // -- Materials system --
+        // Define materials similar to the original Python implementation
+        const materials = [
+            {
+                name: "title",
+                textures: [{ index: 0, wrapS: WRAP_CLAMP_TO_EDGE, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 0, 0, 1, 1],  // [x, y, z, scaleX, scaleY]
+                color: [255, 255, 255, 255],     // RGBA
+                sthB: 0x01041e00
+            },
+            {
+                name: "white",
+                textures: [{ index: 1, wrapS: WRAP_REPEAT, wrapT: WRAP_REPEAT }],
+                textureCoords: [0, 0, 0, 1, 1],
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            {
+                name: "wavea",
+                textures: [{ index: 2, wrapS: WRAP_REPEAT, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 2, 0, 3, 6],  // Notice different scaling for wave textures
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            {
+                name: "waveb",
+                textures: [{ index: 3, wrapS: WRAP_REPEAT, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 2, 0, 3, 6],  // Same scaling as wavea
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            {
+                name: "wave1a",
+                textures: [{ index: 4, wrapS: WRAP_CLAMP_TO_EDGE, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 0, 0, 1, 1],
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            {
+                name: "wave1b",
+                textures: [{ index: 5, wrapS: WRAP_CLAMP_TO_EDGE, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 0, 0, 1, 1],
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            {
+                name: "shape2",
+                textures: [{ index: 6, wrapS: WRAP_CLAMP_TO_EDGE, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 0, 0, 1, 1],
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            {
+                name: "fade",
+                textures: [{ index: 7, wrapS: WRAP_CLAMP_TO_EDGE, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 0, 0, 1, 1],
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            // Bubble materials
+            {
+                name: "abubble1",
+                textures: [{ index: 8, wrapS: WRAP_CLAMP_TO_EDGE, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 0, 0, 1, 1],
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            {
+                name: "abubble2",
+                textures: [{ index: 9, wrapS: WRAP_CLAMP_TO_EDGE, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 0, 0, 1, 1],
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            {
+                name: "abubble3",
+                textures: [{ index: 10, wrapS: WRAP_CLAMP_TO_EDGE, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 0, 0, 1, 1],
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            {
+                name: "abubble4",
+                textures: [{ index: 11, wrapS: WRAP_CLAMP_TO_EDGE, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 0, 0, 1, 1],
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            {
+                name: "abubble5",
+                textures: [{ index: 12, wrapS: WRAP_CLAMP_TO_EDGE, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 0, 0, 1, 1],
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            {
+                name: "abubble6",
+                textures: [{ index: 13, wrapS: WRAP_CLAMP_TO_EDGE, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 0, 0, 1, 1],
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            {
+                name: "bbubble1",
+                textures: [{ index: 14, wrapS: WRAP_CLAMP_TO_EDGE, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 0, 0, 1, 1],
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            {
+                name: "cbubble1",
+                textures: [{ index: 15, wrapS: WRAP_CLAMP_TO_EDGE, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 0, 0, 1, 1],
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            },
+            {
+                name: "cbubble2",
+                textures: [{ index: 16, wrapS: WRAP_CLAMP_TO_EDGE, wrapT: WRAP_CLAMP_TO_EDGE }],
+                textureCoords: [0, 0, 0, 1, 1],
+                color: [255, 255, 255, 255],
+                sthB: 0x01041e00
+            }
+        ];
+
+
+        // -- Texture loading system --
+        const textureNames = [
+            "banner_title.png", "white.png", "banner_wavea.png", "banner_waveb.png",
+            "banner_wave1a.png", "banner_wave1b.png", "banner_shape2.png", "banner_fade.png",
+            "abubble1.png", "abubble2.png", "abubble3.png", "abubble4.png", "abubble5.png", "abubble6.png",
+            "bbubble1.png", "cbubble1.png", "cbubble2.png",
+        ];
+
+        const textures = {};
+        const missingAssets = [];
+        let assetsLoaded = 0;
+        const totalAssets = textureNames.length + 2; // +2 for audio files
+        const loadingText = document.getElementById('loadingText');
+        
+        // Initialize the Web Audio API system
+        function initAudio() {
+            try {
+                // Create audio context
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // Load both audio files
+                Promise.all([
+                    loadAudioBuffer('wiibrew-banner-intro-part.wav'),
+                    loadAudioBuffer('wiibrew-banner-loop-part.wav')
+                ]).then(([intro, loop]) => {
+                    introBuffer = intro;
+                    loopBuffer = loop;
+                    console.log(`Audio loaded - Intro: ${introBuffer.duration.toFixed(2)}s, Loop: ${loopBuffer.duration.toFixed(2)}s`);
+                    
+                    // Count as loaded for loading screen
+                    assetsLoaded += 2;
+                    updateLoading();
+                    
+                    audioInitialized = true;
+                }).catch(error => {
+                    console.error('Error loading audio:', error);
+                    missingAssets.push('audio files');
+                    assetsLoaded += 2; // Count as loaded even if failed
+                    updateLoading();
+                });
+            } catch (e) {
+                console.error('Web Audio API not supported, falling back to HTML Audio');
+                loadFallbackAudio();
+            }
+        }
+
+        // Load audio with Web Audio API
+        function loadAudioBuffer(url) {
+            return fetch(url)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.arrayBuffer();
+                })
+                .then(arrayBuffer => audioContext.decodeAudioData(arrayBuffer));
+        }
+
+        // Fallback to HTML Audio if Web Audio API fails
+        function loadFallbackAudio() {
+            introAudio = new Audio('wiibrew-banner-intro-part.wav');
+            loopAudio = new Audio('wiibrew-banner-loop-part.wav');
+            
+            // Loop the second audio file
+            loopAudio.loop = true;
+            
+            // Count intro audio as loaded
+            introAudio.addEventListener('canplaythrough', () => {
+                assetsLoaded++;
+                updateLoading();
+                console.log('Intro audio loaded (fallback)');
+            }, { once: true });
+            
+            // Count loop audio as loaded
+            loopAudio.addEventListener('canplaythrough', () => {
+                assetsLoaded++;
+                updateLoading();
+                console.log('Loop audio loaded (fallback)');
+            }, { once: true });
+            
+            // Setup intro audio to play loop when finished - ensure clean transition
+            introAudio.addEventListener('ended', () => {
+                loopAudio.currentTime = 0; // Always start the loop from the beginning
+                loopAudio.play();
+                console.log('Intro ended, loop started from beginning (fallback)');
+            });
+            
+            // Handle audio loading errors
+            introAudio.onerror = () => {
+                assetsLoaded++;
+                missingAssets.push('wiibrew-banner-intro-part.wav');
+                updateLoading();
+                console.warn('Failed to load intro audio');
+            };
+            
+            loopAudio.onerror = () => {
+                assetsLoaded++;
+                missingAssets.push('wiibrew-banner-loop-part.wav');
+                updateLoading();
+                console.warn('Failed to load loop audio');
+            };
+            
+            // Start loading
+            introAudio.load();
+            loopAudio.load();
+            
+            audioInitialized = true;
+        }
+
+        // Play audio with precise frame synchronization
+        function playBannerAudio(frame) {
+            if (!audioInitialized) return;
+            
+            // Handle Web Audio API version
+            if (audioContext && introBuffer && loopBuffer) {
+                // Stop any currently playing audio
+                stopAudio();
+                
+                // Resume audio context if suspended
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume();
+                }
+                
+                // Calculate where we are in the animation timeline
+                const frameOffset = frame - FAKE_START;
+                const secondsOffset = frameOffset / 60; // Assuming 60fps animation
+                
+                console.log(`Animation frame: ${frame}, seconds from start: ${secondsOffset.toFixed(2)}s`);
+                
+                // Calculate how much of the intro/loop we need to skip
+                if (frame < LOOP_START) {
+                    // We're in the intro part
+                    const introSource = audioContext.createBufferSource();
+                    introSource.buffer = introBuffer;
+                    introSource.connect(audioContext.destination);
+                    
+                    // Calculate how much of the intro to skip
+                    // Ensure we don't try to loop within the intro - just clamp to valid range
+                    const introOffset = Math.min(Math.max(0, secondsOffset), introBuffer.duration - 0.01);
+                    
+                    // Calculate when intro will end
+                    const introTimeRemaining = introBuffer.duration - introOffset;
+                    
+                    // Log timing info
+                    console.log(`Intro audio duration: ${introBuffer.duration.toFixed(2)}s, starting at offset: ${introOffset.toFixed(2)}s`);
+                    console.log(`Intro will play for ${introTimeRemaining.toFixed(2)}s before transition to loop`);
+                    
+                    // Schedule the loop to start precisely when intro finishes
+                    scheduleLoopStart(audioContext.currentTime + introTimeRemaining);
+                    
+                    // Start the intro audio from the calculated offset
+                    introSource.start(0, introOffset);
+                    currentAudioSource = introSource;
+                } else {
+                    // We're already in the loop part
+                    playLoopAudio(frame);
+                }
+                
+                audioScheduled = true;
+            }
+            // Fallback to HTML Audio elements
+            else if (introAudio && loopAudio) {
+                if (frame < LOOP_START) {
+                    // Calculate time offset based on current frame
+                    const frameOffset = frame - FAKE_START;
+                    const timeOffset = frameOffset / 60; // at 60fps
+                    
+                    console.log(`Animation frame: ${frame}, seconds from start: ${timeOffset.toFixed(2)}s (fallback)`);
+                    
+                    // Only seek if we're past the beginning of the intro
+                    introAudio.pause();
+                    if (timeOffset > 0) {
+                        // Make sure we don't seek too close to the end to avoid playback issues
+                        introAudio.currentTime = Math.min(timeOffset, introAudio.duration - 0.1);
+                        console.log(`Intro duration: ${introAudio.duration.toFixed(2)}s, starting at: ${introAudio.currentTime.toFixed(2)}s (fallback)`);
+                    } else {
+                        introAudio.currentTime = 0;
+                        console.log(`Starting intro from beginning (fallback)`);
+                    }
+                    
+                    // Ensure the ended event handler is properly set
+                    introAudio.onended = () => {
+                        loopAudio.currentTime = 0; // Always start loop from beginning for clean transition
+                        loopAudio.play();
+                        console.log(`Intro ended, starting loop from beginning (fallback)`);
+                    };
+                    
+                    introAudio.play();
+                } else {
+                    // If we're past the intro, play the loop audio
+                    introAudio.pause();
+                    
+                    // Calculate time offset within the loop
+                    const loopDuration = loopAudio.duration; // in seconds
+                    const frameOffsetInLoop = (frame - LOOP_START) / 60; // in seconds
+                    const timeOffsetInLoop = frameOffsetInLoop % loopDuration;
+                    
+                    loopAudio.currentTime = timeOffsetInLoop;
+                    console.log(`Loop duration: ${loopDuration.toFixed(2)}s, starting at: ${timeOffsetInLoop.toFixed(2)}s (fallback)`);
+                    
+                    loopAudio.play();
+                }
+            }
+        }
+
+        // Schedule loop audio to start at a specific time
+        function scheduleLoopStart(startTime) {
+            if (!audioContext || !loopBuffer) return;
+            
+            const loopSource = audioContext.createBufferSource();
+            loopSource.buffer = loopBuffer;
+            loopSource.loop = true;
+            loopSource.connect(audioContext.destination);
+            
+            // Start from the beginning of the loop file for accurate looping
+            // This ensures the intro transitions perfectly to the loop as designed in the BNS format
+            loopSource.start(startTime, 0); // Second parameter 0 ensures we start from the beginning
+            
+            // Store the scheduled source
+            loopStartScheduled = true;
+            
+            // Calculate time before transition to log
+            const timeUntilTransition = (startTime - audioContext.currentTime);
+            console.log(`Loop scheduled to start in ${timeUntilTransition.toFixed(2)}s`);
+            
+            // Handle updating the current source reference
+            setTimeout(() => {
+                if (audioScheduled && loopStartScheduled) {
+                    currentAudioSource = loopSource;
+                    console.log('Transitioned to loop audio (duration: ' + loopBuffer.duration.toFixed(2) + 's)');
+                }
+            }, timeUntilTransition * 1000);
+        }
+
+        // Play loop audio directly
+        function playLoopAudio(frame) {
+            if (!audioContext || !loopBuffer) return;
+            
+            const loopSource = audioContext.createBufferSource();
+            loopSource.buffer = loopBuffer;
+            loopSource.loop = true;
+            loopSource.connect(audioContext.destination);
+            
+            // Calculate position in loop - ensure we're using the actual loopBuffer duration
+            // rather than assuming the animation loop matches the audio loop exactly
+            const loopElapsedFrames = (frame - LOOP_START);
+            const loopElapsedSeconds = loopElapsedFrames / 60;
+            
+            // The loop point should be exactly at the start of the loop buffer
+            // This ensures precise looping as specified in the BNS audio format
+            const loopPosition = loopElapsedSeconds % loopBuffer.duration;
+            
+            loopSource.start(0, loopPosition);
+            currentAudioSource = loopSource;
+            console.log(`Playing loop audio at position ${loopPosition.toFixed(2)}s of ${loopBuffer.duration.toFixed(2)}s duration`);
+        }
+
+        // Stop all audio playback
+        function stopAudio() {
+            // Stop Web Audio API source
+            if (currentAudioSource) {
+                try {
+                    currentAudioSource.stop();
+                } catch (e) {
+                    // Source might already be stopped
+                }
+                currentAudioSource = null;
+            }
+            
+            loopStartScheduled = false;
+            audioScheduled = false;
+            
+            // Stop HTML Audio fallback
+            if (introAudio) introAudio.pause();
+            if (loopAudio) loopAudio.pause();
+        }
+
+        // Load textures
+        function loadTextures() {
+            for (const name of textureNames) {
+                const img = new Image();
+                img.onload = () => { 
+                    createTexture(name, img);
+                    assetsLoaded++; 
+                    updateLoading(); 
+                };
+                img.onerror = () => { 
+                    assetsLoaded++; 
+                    missingAssets.push(name);
+                    updateLoading(); 
+                    console.warn('Failed to load: ' + name); 
+                };
+                img.src = name;
+            }
+        }
+        
+        // Create WebGL texture from loaded image
+        function createTexture(name, image) {
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            
+            // Set parameters for texture
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            
+            // Upload the image into the texture
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+            
+            // Store the texture and the image for later use
+            textures[name] = {
+                texture: texture,
+                image: image,
+                width: image.width,
+                height: image.height
+            };
+        }
+
+        function updateLoading() {
+            if (assetsLoaded === totalAssets) {
+                loadingText.style.display = 'none';
+                if (missingAssets.length > 0) {
+                    missingAssetsDiv.style.display = 'block';
+                    missingAssetsDiv.textContent = 'Missing assets: ' + missingAssets.join(', ');
+                }
+                init();
+            } else {
+                loadingText.textContent = 'Loading: ' + Math.round(assetsLoaded / totalAssets * 100) + '%';
+            }
+        }
+
+        let animationRunning = false;
+        let animationRequestId = null;
+        let animationStartTimeWallclock = null;
+        let animationRealFrame = FAKE_START;
+
+        // --- Bubble generation ---
+        const bubbleTypes = [
+            { name: "abubble1", width: 48, height: 48, chance: 1 },
+            { name: "abubble2", width: 32, height: 32, chance: 1 },
+            { name: "abubble3", width: 16, height: 16, chance: 1 },
+            { name: "abubble4", width: 24, height: 24, chance: 1 },
+            { name: "abubble5", width: 32, height: 32, chance: 1 },
+            { name: "abubble6", width: 16, height: 16, chance: 1 },
+            { name: "bbubble1", width: 48, height: 48, chance: 1 },
+            { name: "cbubble1", width: 64, height: 64, chance: 1 },
+            { name: "cbubble2", width: 16, height: 16, chance: 1 }
+        ];
+
+        const bubbles = [];
+        const BUBBLE_YSTART = -150;
+        const BUBBLE_YEND = 170;
+        const BUBBLE_FADESTART = 0.7;
+
+        function resetBubbles() {
+            bubbles.length = 0;
+            // Reset the random seed to match the Python implementation
+            randomSeedValue = 1;
+            
+            // Create initial burst of bubbles
+            for (let i = 0; i < 100; i++) {
+                addBubble(BUBBLE_BOOM);
+            }
+
+            // Fill with random bubbles
+            for (let i = 0; i < 280; i++) {
+                const start = randomRange(BUBBLE_BOOM, LOOP_END);
+                addBubble(start);
+            }
+
+            // Remove bubbles that go beyond the loop end
+            for (let i = bubbles.length - 1; i >= 0; i--) {
+                if (bubbles[i].end > LOOP_END) {
+                    bubbles.splice(i, 1);
+                }
+            }
+
+            // Clone bubbles that cross the loop point
+            const clones = [];
+            for (const b of bubbles) {
+                if (b.start < LOOP_START && b.end > LOOP_START) {
+                    const clone = Object.assign({}, b);
+                    clone.start = clone.start - LOOP_START + LOOP_END;
+                    clone.end = clone.end - LOOP_START + LOOP_END;
+                    clone.fadeStart = clone.start + (clone.end - clone.start) * BUBBLE_FADESTART;
+                    clones.push(clone);
+                }
+            }
+            bubbles.push(...clones);
+        }
+
+        function chooseBubbleType() {
+            const sumChances = bubbleTypes.reduce((sum, type) => sum + type.chance, 0);
+            let roll = randomRange(0, sumChances);
+            
+            for (let i = 0; i < bubbleTypes.length; i++) {
+                if (roll < bubbleTypes[i].chance) {
+                    return i;
+                }
+                roll -= bubbleTypes[i].chance;
+            }
+            return bubbleTypes.length - 1;
+        }
+
+        function addBubble(start, length, x, xp) {
+            length = length || randomRange(50, 170);
+            x = x || randomRange(-WIDTH / 2 - 64, WIDTH / 2 + 64);
+            xp = xp || randomRange(0, 32);
+            
+            const end = start + length;
+            const fadeStart = start + length * BUBBLE_FADESTART;
+            
+            bubbles.push({
+                type: chooseBubbleType(),
+                x, xp, start, length, end, fadeStart,
+                yStart: BUBBLE_YSTART,
+                yEnd: BUBBLE_YEND
+            });
+        }
+
+        // --- Initialize materials ---
+        function initMaterials() {
+            // Create map for quick lookups
+            materials.forEach(material => {
+                materialsMap[material.name] = material;
+            });
+            
+            // Log material-texture mappings
+            for (let i = 0; i < textureNames.length; i++) {
+                const materialsWithTexture = materials.filter(m => 
+                    m.textures.some(t => t.index === i)
+                );
+                if (materialsWithTexture.length > 0) {
+                    console.log(`Texture ${textureNames[i]} used by materials: ${materialsWithTexture.map(m => m.name).join(', ')}`);
+                }
+            }
+        }
+
+        // --- Deterministic random generator to match Python's behavior ---
+        let randomSeedValue = 1;
+        
+        function seededRandom() {
+            randomSeedValue = (randomSeedValue * 9301 + 49297) % 233280;
+            return randomSeedValue / 233280;
+        }
+        
+        function randomRange(min, max) {
+            return min + (max - min) * seededRandom();
+        }
+
+        // --- Hermite tweening function (matching Python implementation) ---
+        function hermite(t, v0, v1, m0, m1, dur) {
+            const nf = dur; // Duration, used in tangent calculations
+            return (
+                m0 * 1 * nf * (t + t**3 - 2*t**2) + 
+                m1 * 1 * nf * (t**3 - t**2) + 
+                v0 * (1 + (2*t**3 - 3*t**2)) + 
+                v1 * (-2*t**3 + 3*t**2)
+            );
+        }
+
+        // --- Animation system ---
+        function calcValue(anim, frame) {
+            // Handle keyframe triplets from original code
+            if (Array.isArray(anim)) {
+                for (let i = 0; i < anim.length - 1; i++) {
+                    const a = anim[i], b = anim[i + 1];
+                    if (frame >= a.frame && frame < b.frame) {
+                        const t = (frame - a.frame) / (b.frame - a.frame);
+                        const nf = b.frame - a.frame;
+                        return hermite(t, a.value, b.value, a.tangent || 0, b.tangent || 0, nf);
+                    }
+                }
+                // If frame is outside the range, use the first or last value
+                return frame < anim[0].frame ? anim[0].value : anim[anim.length - 1].value;
+            } else { 
+                return anim; // Static value
+            }
+        }
+
+        // --- RepSimple animation generator (matching Python) ---
+        function generateRepSimpleAnim(startTime, endTime, repetitions, startValue, startTangent, endValue, endTangent) {
+            const totalDuration = endTime - startTime;
+            const stepDuration = totalDuration / repetitions;
+            const animFrames = [];
+            
+            for (let rep = 0; rep < repetitions; rep++) {
+                const repStart = startTime + rep * stepDuration;
+                const repMid = repStart + stepDuration/2;
+                const repEnd = repStart + stepDuration;
+                
+                if (rep === 0) {
+                    animFrames.push({ frame: repStart, value: startValue, tangent: startTangent });
+                }
+                
+                if (rep < repetitions - 1) {
+                    animFrames.push({ frame: repMid, value: endValue, tangent: endTangent });
+                    animFrames.push({ frame: repEnd, value: startValue, tangent: startTangent });
+                } else {
+                    // Last repetition
+                    animFrames.push({ frame: repMid, value: endValue, tangent: endTangent });
+                    animFrames.push({ frame: repEnd, value: startValue, tangent: startTangent });
+                }
+            }
+            
+            return animFrames;
+        }
+
+        // --- Element definitions with animations ---
+        const elements = {
+            background: { 
+                materialName: "white", 
+                x: 0, y: 0, 
+                width: 810, height: 456, 
+                alpha: 1 
+            },
+            
+            water: {
+                pane: true,
+                animations: {
+                    y: [
+                        { frame: 0, value: -320, tangent: 0 },
+                        { frame: 160, value: 0, tangent: 0 }
+                    ]
+                },
+                children: ["wavea", "waveb", "wave1a", "wave1b1", "wave1b2", "shadow", "fade"]
+            },
+            
+            title: {
+                materialName: "title", 
+                x: 0, y: 32, 
+                width: 400, height: 180, 
+                alpha: 0,
+                materialCoords: [
+                    [0, 0], [1, 0], [0, 1], [1, 1]  // Default texture coordinates
+                ],
+                animations: {
+                    y: generateRepSimpleAnim(FAKE_START, LOOP_END, 12, 32, 0, 20, 0),
+                    alpha: [
+                        { frame: 0, value: 0, tangent: 0 },
+                        { frame: 243, value: 0, tangent: 0 },
+                        { frame: 244, value: 1, tangent: 0 }
+                    ]
+                }
+            },
+            
+            wavea: {
+                materialName: "wavea", 
+                x: -300, y: 35, 
+                width: 3072, height: 384, 
+                alpha: 1,
+                materialCoords: [
+                    [0, 0], [1, 0], [0, 1], [1, 1]
+                ],
+                animations: {
+                    x: generateRepSimpleAnim(FAKE_START, LOOP_END, 4, -300, 0, 300, 0),
+                    y: generateRepSimpleAnim(FAKE_START, LOOP_END, 6, 35, 0, 55, 0)
+                }
+            },
+            
+            waveb: {
+                materialName: "waveb", 
+                x: -300, y: 32, // Fixed Y position to match Python
+                width: 3072, height: 384, 
+                alpha: 1,
+                materialCoords: [
+                    [0, 0], [1, 0], [0, 1], [1, 1]
+                ],
+                animations: {
+                    x: generateRepSimpleAnim(FAKE_START, LOOP_END, 4, -300, 2.0, 300, 2.0),
+                    y: generateRepSimpleAnim(FAKE_START, LOOP_END, 8, 45, 0, 55, 0)
+                }
+            },
+            
+            wave1a: {
+                materialName: "wave1a", 
+                x: -200, y: 160, 
+                width: 382, height: 32, 
+                alpha: 1,
+                materialCoords: [
+                    [0, 0], [1, 0], [0, 1], [1, 1]
+                ],
+                animations: {
+                    x: generateRepSimpleAnim(FAKE_START, LOOP_END, 4, -200, 4.0, 200, 4.0),
+                    y: generateRepSimpleAnim(FAKE_START, LOOP_END, 6, 160, 0.2, 180, 0.2)
+                }
+            },
+            
+            wave1b1: {
+                materialName: "wave1b", 
+                x: 200, y: 170, 
+                width: 527, height: 37, 
+                alpha: 1,
+                materialCoords: [
+                    [0, 0], [1, 0], [0, 1], [1, 1]
+                ],
+                animations: {
+                    x: generateRepSimpleAnim(FAKE_START, LOOP_END, 4, 200, 3.2, 400, 3.2),
+                    y: generateRepSimpleAnim(FAKE_START, LOOP_END, 6, 170, 0.2, 183, 0.2)
+                }
+            },
+            
+            wave1b2: {
+                materialName: "wave1b", 
+                x: -380, y: 170, 
+                width: 527, height: 37, 
+                alpha: 1,
+                materialCoords: [
+                    [0, 0], [1, 0], [0, 1], [1, 1]
+                ],
+                animations: {
+                    x: generateRepSimpleAnim(FAKE_START, LOOP_END, 4, -400, 3.7, -200, 3.7),
+                    y: generateRepSimpleAnim(FAKE_START, LOOP_END, 6, 165, 0.2, 185, 0.2)
+                }
+            },
+            
+            shadow: {
+                materialName: "shape2", 
+                x: -180, y: 150, 
+                width: 644, height: 28, 
+                alpha: 1,
+                materialCoords: [
+                    [0, 0], [1, 0], [0, 1], [1, 1]
+                ],
+                animations: {
+                    x: generateRepSimpleAnim(FAKE_START, LOOP_END, 4, -180, 1.4, 100, 1.4),
+                    y: generateRepSimpleAnim(FAKE_START, LOOP_END, 6, 150, 0.2, 155, 0.2)
+                }
+            },
+            
+            fade: { 
+                materialName: "fade", 
+                x: 0, y: 8, 
+                width: 810, height: 256, 
+                alpha: 1,
+                materialCoords: [
+                    [0, 0], [1, 0], [0, 1], [1, 1]
+                ]
+            },
+            
+            boom: {
+                materialName: "white", 
+                x: 0, y: 0, 
+                width: 810, height: 456, 
+                alpha: 0,
+                materialCoords: [
+                    [0, 0], [1, 0], [0, 1], [1, 1]
+                ],
+                animations: {
+                    alpha: [
+                        { frame: 0, value: 0, tangent: 0 },
+                        { frame: 243, value: 0, tangent: 0 },
+                        { frame: 244, value: 1, tangent: 0 },
+                        { frame: 246, value: 1, tangent: 0 },
+                        { frame: 256, value: 0, tangent: 0 }
+                    ]
+                }
+            }
+        };
+
+        // Update element properties based on animation at current frame
+        function updateElement(element, frame) {
+            if (!element.animations) {
+                // If the element has no animations, just apply waterY if present
+                if (element.waterY !== undefined) {
+                    const result = Object.assign({}, element);
+                    result.y = (result.y || 0) + element.waterY;
+                    delete result.waterY; // Remove the special property
+                    return result;
+                }
+                return element;
+            }
+            
+            // Create a shallow copy of the element to avoid modifying the original
+            const result = Object.assign({}, element);
+            
+            for (const [prop, anim] of Object.entries(element.animations)) {
+                result[prop] = calcValue(anim, frame);
+            }
+            
+            // Apply waterY after animations if present
+            if (element.waterY !== undefined) {
+                result.y = (result.y || 0) + element.waterY;
+                delete result.waterY; // Remove the special property
+            }
+            
+            return result;
+        }
+
+        // --- WebGL rendering functions ---
+        function setupWebGL() {
+            // Set viewport and clear color
+            gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+            gl.clearColor(0, 0, 0, 1);
+            
+            // Enable blending for alpha support
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+            
+            // Set resolution uniform - match the Python OpenGL's orthographic projection
+            // which is centered at origin with width/height as the extents
+            gl.uniform2f(programInfo.uniformLocations.resolution, canvas.width, canvas.height);
+            
+            // Enable depth testing similar to Python code
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LEQUAL);
+            
+            // Note: In WebGL, texturing is implicit when binding textures
+            // The Python's glEnable(GL_TEXTURE_2D) has no equivalent here
+        }
+
+        // Draw a rectangle with WebGL
+        function drawWebGLRect(element, frame) {
+            // Skip if not visible or no material
+            if (element.pane) return;
+            if (!element.materialName) return;
+            
+            // Get updated properties based on animations
+            const updated = updateElement(element, frame);
+            const { materialName, x, y, width, height, alpha = 1, materialCoords, rotation = 0 } = updated;
+            
+            // Skip if alpha is 0 (completely transparent)
+            if (alpha <= 0) return;
+            
+            const material = materialsMap[materialName];
+            if (!material) return;
+
+            const textureInfo = material.textures[0];
+            const textureName = textureNames[textureInfo.index];
+            const textureData = textures[textureName];
+            
+            if (!textureData || !textureData.texture) return;
+            
+            // Set position buffer
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.enableVertexAttribArray(programInfo.attribLocations.position);
+            gl.vertexAttribPointer(programInfo.attribLocations.position, 2, gl.FLOAT, false, 0, 0);
+            
+            // Set texture coordinate buffer - match the Python implementation
+            if (materialCoords) {
+                // If we have custom material coordinates, use them
+                const texCoords = [
+                    materialCoords[0][0], materialCoords[0][1],
+                    materialCoords[1][0], materialCoords[1][1],
+                    materialCoords[2][0], materialCoords[2][1],
+                    materialCoords[3][0], materialCoords[3][1]
+                ];
+                gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texCoords), gl.STATIC_DRAW);
+            } else {
+                // Otherwise use default coordinates
+                gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+                const texCoords = [
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    0.0, 1.0,
+                    1.0, 1.0
+                ];
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texCoords), gl.STATIC_DRAW);
+            }
+            gl.enableVertexAttribArray(programInfo.attribLocations.texCoord);
+            gl.vertexAttribPointer(programInfo.attribLocations.texCoord, 2, gl.FLOAT, false, 0, 0);
+            
+            // Set uniforms for position and size - match Python implementation
+            gl.uniform2f(programInfo.uniformLocations.translation, x, y);
+            gl.uniform2f(programInfo.uniformLocations.scale, width, height);
+            gl.uniform1f(programInfo.uniformLocations.rotation, rotation);
+            
+            // FIXED: Set texture coordinate transformation - match Python implementation
+            // Direct access to textureCoords array elements
+            gl.uniform2f(programInfo.uniformLocations.texOffset, material.textureCoords[0], material.textureCoords[1]);
+            gl.uniform2f(programInfo.uniformLocations.texScale, material.textureCoords[3], material.textureCoords[4]);
+            
+            // Set texture
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, textureData.texture);
+            gl.uniform1i(programInfo.uniformLocations.image, 0);
+            
+            // Set texture wrap mode based on material
+            const glWrapS = textureInfo.wrapS === WRAP_REPEAT ? gl.REPEAT : 
+                            textureInfo.wrapS === WRAP_MIRRORED_REPEAT ? gl.MIRRORED_REPEAT : 
+                            gl.CLAMP_TO_EDGE;
+                            
+            const glWrapT = textureInfo.wrapT === WRAP_REPEAT ? gl.REPEAT : 
+                            textureInfo.wrapT === WRAP_MIRRORED_REPEAT ? gl.MIRRORED_REPEAT : 
+                            gl.CLAMP_TO_EDGE;
+                            
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, glWrapS);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, glWrapT);
+            
+            // Set color and alpha - match Python implementation
+            const normalizedColor = material.color.map(c => c / 255.0);
+            gl.uniform4f(
+                programInfo.uniformLocations.color, 
+                normalizedColor[0], 
+                normalizedColor[1], 
+                normalizedColor[2], 
+                normalizedColor[3]
+            );
+            gl.uniform1f(programInfo.uniformLocations.alpha, alpha);
+            
+            // Draw the rectangle
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            
+            // Draw debug info if enabled
+            if (debugMode) {
+                drawDebugRect(element, updated, material);
+            }
+        }
+        
+        // Draw debug rectangle
+        function drawDebugRect(element, updated, material) {
+            // Implementation of debug visualization would go here
+            // This would be similar to the original debug rendering but using WebGL lines
+        }
+
+        // Draw a bubble with WebGL - match Python implementation
+        function drawWebGLBubble(bubble, frame) {
+            if (frame < bubble.start || frame > bubble.end) return;
+            
+            const bubbleType = bubbleTypes[bubble.type];
+            const materialName = bubbleType.name;
+            
+            // Get material from materials map
+            const material = materialsMap[materialName];
+            if (!material) {
+                if (debugMode) console.log("Missing material for bubble:", materialName);
+                return;
+            }
+
+            const textureInfo = material.textures[0];
+            const textureName = textureNames[textureInfo.index];
+            const textureData = textures[textureName];
+            
+            if (!textureData || !textureData.texture) {
+                if (debugMode) console.log("Missing texture for bubble:", textureName);
+                return;
+            }
+            
+            // Calculate position based on hermite interpolation
+            const progress = (frame - bubble.start) / bubble.length;
+            const y = hermite(
+                progress, 
+                bubble.yStart, bubble.yEnd, 
+                1, 1, 
+                bubble.length
+            );
+            
+            // Calculate alpha
+            let alpha = 1.0;
+            if (frame >= bubble.fadeStart) {
+                // Fade out
+                const fadeProgress = (frame - bubble.fadeStart) / (bubble.end - bubble.fadeStart);
+                alpha = hermite(fadeProgress, 1, 0, 0, 0, bubble.end - bubble.fadeStart);
+            } else if (frame <= bubble.start + 5) {
+                // Fade in
+                const fadeInProgress = (frame - bubble.start) / 5;
+                alpha = hermite(fadeInProgress, 0, 1, 0, 0, 5);
+            }
+            
+            // Set position buffer
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.enableVertexAttribArray(programInfo.attribLocations.position);
+            gl.vertexAttribPointer(programInfo.attribLocations.position, 2, gl.FLOAT, false, 0, 0);
+            
+            // Set texture coordinate buffer - use default coordinates
+            gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+            const texCoords = [
+                0.0, 0.0,  // Bottom left
+                1.0, 0.0,  // Bottom right
+                0.0, 1.0,  // Top left
+                1.0, 1.0,  // Top right
+            ];
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texCoords), gl.STATIC_DRAW);
+            gl.enableVertexAttribArray(programInfo.attribLocations.texCoord);
+            gl.vertexAttribPointer(programInfo.attribLocations.texCoord, 2, gl.FLOAT, false, 0, 0);
+            
+            // Set uniforms for position and size - matching Python implementation
+            gl.uniform2f(programInfo.uniformLocations.translation, bubble.x, y);
+            gl.uniform2f(programInfo.uniformLocations.scale, bubbleType.width, bubbleType.height);
+            gl.uniform1f(programInfo.uniformLocations.rotation, 0);
+            
+            // FIXED: Apply texture coordinate transformation correctly
+            gl.uniform2f(programInfo.uniformLocations.texOffset, material.textureCoords[0], material.textureCoords[1]);
+            gl.uniform2f(programInfo.uniformLocations.texScale, material.textureCoords[3], material.textureCoords[4]);
+            
+            // Set texture
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, textureData.texture);
+            gl.uniform1i(programInfo.uniformLocations.image, 0);
+            
+            // Set texture wrap mode based on material
+            const glWrapS = textureInfo.wrapS === WRAP_REPEAT ? gl.REPEAT : 
+                            textureInfo.wrapS === WRAP_MIRRORED_REPEAT ? gl.MIRRORED_REPEAT : 
+                            gl.CLAMP_TO_EDGE;
+                            
+            const glWrapT = textureInfo.wrapT === WRAP_REPEAT ? gl.REPEAT : 
+                            textureInfo.wrapT === WRAP_MIRRORED_REPEAT ? gl.MIRRORED_REPEAT : 
+                            gl.CLAMP_TO_EDGE;
+                            
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, glWrapS);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, glWrapT);
+            
+            // Set color and alpha from material with proper alpha blending
+            const normalizedColor = material.color.map(c => c / 255.0);
+            gl.uniform4f(
+                programInfo.uniformLocations.color, 
+                normalizedColor[0], 
+                normalizedColor[1], 
+                normalizedColor[2], 
+                normalizedColor[3]
+            );
+            gl.uniform1f(programInfo.uniformLocations.alpha, alpha);
+            
+            // Draw the bubble
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            
+            // Draw debug info if enabled
+            if (debugMode) {
+                drawDebugBubble(bubble, y, bubbleType);
+            }
+        }
+
+        
+        // Debug drawing for bubbles
+        function drawDebugBubble(bubble, y, bubbleType) {
+            // This would implement debug visualization for bubbles
+            // Similar to the Python code's debug drawing
+        }
+
+        // --- Animation loop ---
+        function animateFrame(timestamp) {
+            if (animationStartTimeWallclock == null) {
+                animationStartTimeWallclock = timestamp - ((animationRealFrame - FAKE_START) * (1000 / 60));
+                lastTime = timestamp;
+            }
+            
+            // Calculate time since last frame for FPS
+            const deltaTime = timestamp - lastTime;
+            lastTime = timestamp;
+            
+            // Update FPS calculation
+            frameTimeAccum += deltaTime;
+            frameCount++;
+            if (frameTimeAccum >= 1000) { // Update every second
+                fpsValue = Math.round((frameCount * 1000) / frameTimeAccum);
+                fpsMeter.textContent = fpsValue;
+                frameCount = 0;
+                frameTimeAccum = 0;
+            }
+            
+            // Calculate current frame
+            let elapsed = timestamp - animationStartTimeWallclock;
+            let frame = elapsed / (1000 / 60) + FAKE_START;
+            animationRealFrame = frame;
+            
+            // Handle looping
+            if (animationRealFrame >= LOOP_END) {
+                const loopOffset = LOOP_END - LOOP_START;
+                const overrun = animationRealFrame - LOOP_END;
+                
+                // Calculate precise frame position within the loop
+                const newFrame = LOOP_START + (overrun % loopOffset);
+                
+                // Update the start time to maintain exact continuity
+                // This ensures the animation values at the loop point match perfectly
+                const frameTime = 1000 / 60; // milliseconds per frame at 60fps
+                animationStartTimeWallclock = timestamp - ((newFrame - FAKE_START) * frameTime);
+                
+                // Only update the frame after calculating the correct start time
+                animationRealFrame = newFrame;
+            }
+            
+            frameCounter.textContent = Math.floor(animationRealFrame);
+            
+            // Render the current frame
+            renderAll(animationRealFrame);
+            
+            if (animationRunning) {
+                animationRequestId = requestAnimationFrame(animateFrame);
+            }
+        }
+
+        // --- Main rendering function ---
+        function renderAll(frame) {
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            
+            // Draw background
+            drawWebGLRect(elements.background, frame);
+            
+            // Draw water pane with all its children
+            const water = updateElement(elements.water, frame);
+            const waterY = water.y || 0;
+            
+            // Draw water pane children in correct order
+            const childOrder = ["wavea", "waveb", "wave1a", "wave1b1", "wave1b2", "shadow", "fade"];
+            for (const childName of childOrder) {
+                const child = elements[childName];
+                
+                // Create a special copy of the element with a waterY property
+                const childWithWaterY = Object.assign({}, child, { waterY: waterY });
+                
+                // Draw the element
+                drawWebGLRect(childWithWaterY, frame);
+                
+                if (debugMode && childName.includes("wave")) {
+                    // Debug visualization would go here
+                }
+            }
+            
+            // Draw bubbles
+            for (const bubble of bubbles) {
+                drawWebGLBubble(bubble, frame);
+            }
+            
+            // Draw title and boom effect
+            drawWebGLRect(elements.title, frame);
+            drawWebGLRect(elements.boom, frame);
+            
+            // Debug rendering if enabled
+            if (debugMode) {
+                renderDebugInfo(frame);
+            }
+        }
+
+        // Debug rendering
+        function renderDebugInfo(frame) {
+            // This would implement debug visualization using WebGL
+            // (In a real application, you might use a separate canvas for debug overlay)
+        }
+
+        // --- Initialization ---
+        function init() {
+            initShaders();
+            initMaterials();
+            initBubbles();
+            setupWebGL();
+            
+            // Initialize audio if not already done
+            if (!audioInitialized) {
+                initAudio();
+            }
+            
+            // Check which bubbles are missing textures
+            const missingBubbleTextures = bubbleTypes
+                .map(type => type.name + ".png")
+                .filter(texName => !textures[texName]);
+                
+            if (missingBubbleTextures.length > 0) {
+                console.warn("Missing bubble textures:", missingBubbleTextures);
+                missingAssetsDiv.style.display = 'block';
+                missingAssetsDiv.textContent += ' Missing bubble textures: ' + missingBubbleTextures.join(', ');
+            }
+            
+            // Print info about bubbles
+            console.log(`Total bubbles: ${bubbles.length}`);
+            console.log(`Bubbles at FAKE_START (${FAKE_START}): ${bubbles.filter(b => FAKE_START >= b.start && FAKE_START <= b.end).length}`);
+            console.log(`Bubbles at BUBBLE_BOOM (${BUBBLE_BOOM}): ${bubbles.filter(b => BUBBLE_BOOM >= b.start && BUBBLE_BOOM <= b.end).length}`);
+            console.log(`Bubbles after BUBBLE_BOOM: ${bubbles.filter(b => b.start >= BUBBLE_BOOM).length}`);
+            
+            renderAll(FAKE_START);
+        }
+
+        function initBubbles() {
+            resetBubbles();
+        }
+// --- Event handlers ---
+document.getElementById('playBtn').onclick = () => {
+    if (!animationRunning) {
+        animationRunning = true;
+        playBannerAudio(animationRealFrame);
+        animationRequestId = requestAnimationFrame(animateFrame);
+    }
+};
+document.getElementById('pauseBtn').onclick = () => {
+    animationRunning = false;
+    stopAudio();
+    if (animationRequestId) {
+        cancelAnimationFrame(animationRequestId);
+        animationRequestId = null;
+    }
+};
+document.getElementById('resetBtn').onclick = () => {
+    animationRunning = false;
+    stopAudio();
+    if (animationRequestId) {
+        cancelAnimationFrame(animationRequestId);
+        animationRequestId = null;
+    }
+    animationStartTimeWallclock = null;
+    animationRealFrame = FAKE_START;
+    renderAll(animationRealFrame);
+};
+        
+        document.getElementById('jumpToBubbleBtn').onclick = () => {
+            animationStartTimeWallclock = null;
+            animationRealFrame = BUBBLE_BOOM;
+            renderAll(animationRealFrame);
+            
+            if (animationRunning) {
+                playBannerAudio(BUBBLE_BOOM);
+            }
+        };
+
+        // document.getElementById('debugBtn').onclick = () => {
+        //     debugMode = !debugMode;
+        //     renderAll(animationRealFrame);
+        // };
+
+        // Add keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            switch(e.key) {
+                case ' ': // Space - toggle play/pause
+                    if (animationRunning) {
+                        document.getElementById('pauseBtn').onclick();
+                    } else {
+                        document.getElementById('playBtn').onclick();
+                    }
+                    break;
+                case 'r': // R - reset
+                    document.getElementById('resetBtn').onclick();
+                    break;
+                case 'd': // D - debug mode
+                    // document.getElementById('debugBtn').onclick();
+                    break;
+            }
+        });
+
+        // Start loading textures
+        loadTextures();
+        initAudio();
+    </script>
+
+</body>
+
+</html>
