@@ -2,7 +2,7 @@
 
 A pixel-perfect recreation of the Nintendo Wii Homebrew Channel banner animation using WebGL and modern web technologies.
 
-![HBC WebGL Banner](hbc-webgl-screenshot.png)
+![HBC WebGL Banner](banner_title.png)
 
 ## Overview
 
